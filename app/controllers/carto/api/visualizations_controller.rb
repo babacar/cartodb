@@ -282,7 +282,7 @@ module Carto
         render_jsonp({ errors: vis.errors.full_messages.empty? ? ['Error updating'] : vis.errors.full_messages },
                      error_code)
       end
-
+      # Si invoca tanto al borrar un mapa como un dataset?
       def destroy
         return head(403) unless @visualization.has_permission?(current_viewer, Carto::Permission::ACCESS_READWRITE)
 

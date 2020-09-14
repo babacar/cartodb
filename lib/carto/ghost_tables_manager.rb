@@ -13,12 +13,15 @@ module Carto
 
     def initialize(user_id)
       @user_id = user_id
+      log_info(message: 'Initialized GhostTablesManager')
     end
 
     def user
       @user ||= ::User[@user_id]
     end
-
+    # Se borra la table en el job
+    # Se queda la visualización huérfana
+    # Se borra la visualización por GhostTables job
     def link_ghost_tables
       user_tables = fetch_user_tables
       if (user_tables.length > MAX_USERTABLES_FOR_SYNC_CHECK)
@@ -86,11 +89,11 @@ module Carto
     def should_run_synchronously?(regenerated_tables, renamed_tables, new_tables, dropped_tables)
       (regenerated_tables.count + renamed_tables.count + new_tables.count + dropped_tables.count) < MAX_TABLES_FOR_SYNC_RUN
     end
-
+    # Esto es lo que ejecuta el job de ghost tables
     def sync_user_tables_with_db
       got_locked = get_bolt.run_locked(fail_function: lambda { link_ghost_tables_asynchronously }) { sync }
     end
-
+    # como la tabla no estará cartodbfiecada, se borrarra
     def fetch_altered_tables
       cartodbfied_tables = fetch_cartodbfied_tables.sort_by(&:id)
       user_tables = fetch_user_tables.sort_by(&:id)
@@ -136,8 +139,9 @@ module Carto
 
       return regenerated_tables, renamed_tables, new_tables, dropped_tables
     end
-
+    # Revisar las dropped tables, si está la qui yo quiero
     def sync
+      log_info(message: 'GhostTablesManager: called #sync')
       regenerated_tables, renamed_tables, new_tables, dropped_tables = fetch_altered_tables
 
       # Update table_id on UserTables with physical tables with changed oid. Should go first.
@@ -150,7 +154,8 @@ module Carto
       new_tables.each(&:create_user_table)
 
       # Unlink tables that have been created through the SQL API. Should go last.
-      dropped_tables.each(&:drop_user_table)
+      log_info(message: 'GhostTablesManager: calling #drop_user_table on tables', tables_names: dropped_tables.map(&:name))
+      dropped_tables.each(&:drop_user_table) # y esto?
     end
 
     # Fetches all currently linked user tables
@@ -207,6 +212,10 @@ module Carto
         Carto::TableFacade.new(record[:reloid], record[:table_name], @user_id)
       end
     end
+
+    def log_context
+      super.merge(current_user: user.username)
+    end
   end
 
   class TableFacade
@@ -233,6 +242,8 @@ module Carto
     end
 
     def create_user_table
+      log_operation(__method__)
+
       user_table = Carto::UserTable.new
       user_table.user_id = user.id
       user_table.table_id = id
@@ -248,6 +259,8 @@ module Carto
     end
 
     def rename_user_table_vis
+      log_operation(__method__)
+
       user_table_vis = user_table_with_matching_id.table_visualization
 
       user_table_vis.register_table_only = true
@@ -257,19 +270,29 @@ module Carto
     rescue StandardError => exception
       log_error(message: 'Ghost tables: Error renaming Visualization', exception: exception)
     end
-
+    # se invoca a esto sobre la tabla porque el fetch_user_tables detecta que no esta cartodbficada
     def drop_user_table
+      log_operation(__method__)
+
       user_table_to_drop = user.tables.where(table_id: id, name: name).first
       return unless user_table_to_drop # The table has already been deleted
 
-      table_to_drop = Carto::UserTable.find_by(id: id, name: name)
+      table_to_drop = ::Table.new(user_table: user_table_to_drop)
+      #debugger if table_to_drop.user_table.affected_visualizations.any?
+      carto_visualizations = Carto::Visualization.where(id: table_to_drop.user_table.affected_visualizations.map(&:id))
+      carto_visualizations.map(&:backup_visualization)
       table_to_drop.keep_user_database_table = true
+
       table_to_drop.destroy
+      # esto debería ser un user_table.destroy, porque borrará las visualizaciones haciendo backup de cada una de ellas
+      # si no llama al hook de la visualización y solo borra la tabla, ghost tables borrará la tabla a continuación
     rescue StandardError => exception
       log_error(message: 'Ghost tables: Error dropping Table', exception: exception)
     end
 
     def regenerate_user_table
+      log_operation(__method__)
+
       user_table_to_regenerate = user_table_with_matching_name
 
       user_table_to_regenerate.table_id = id
@@ -293,7 +316,14 @@ module Carto
     private
 
     def log_context
-      super.merge(target_user: user, table: { id: id, name: name })
+      super.merge(current_user: user.username, table_id: id, table_name: name)
+    end
+
+    def log_operation(operation_name)
+      log_info(
+        message: "GhostTables: running #{operation_name}",
+        tag: 'AMIEDES-DEBUG'
+      )
     end
   end
 end

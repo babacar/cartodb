@@ -298,8 +298,8 @@ module Carto
     end
 
     def destroy_dependent_visualizations
-      table_visualization.try(:delete_from_table)
-      @fully_dependent_visualizations_cache.each(&:destroy)
+      table_visualization.try(:delete_from_table) # esto hará el backup de la visualización estandar
+      @fully_dependent_visualizations_cache.each(&:destroy) # esto hara el backup de los mapas creados
       @partially_dependent_visualizations_cache.each do |visualization|
         visualization.unlink_from(self)
       end
